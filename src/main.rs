@@ -5,6 +5,9 @@ use slab::Slab;
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::ops::Shr;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -75,6 +78,7 @@ fn main2(evl: EventLoop<()>) {
     let mut state = None;
     let mut dragging = DragState::NotDragging;
     let mut network = Network::new(0xDEADBEEF);
+    network.spawn_packet_driver();
 
     // Run the event loop.
     evl.run(move |event, elwt, control_flow| {
@@ -210,6 +214,7 @@ struct Network {
     // Nodes and edges.
     nodes: RefCell<Slab<Node>>,
     edges: Vec<(usize, usize)>,
+    update_frequency: Arc<Mutex<Duration>>,
 
     // Drawing utilities.
     origin: Point,
@@ -227,6 +232,7 @@ impl Network {
 
         let mut network = Network {
             scale: 1.0,
+            update_frequency: Arc::new(Mutex::new(Duration::from_millis(500))),
             ..Default::default()
         };
 
@@ -249,18 +255,24 @@ impl Network {
                 }
             };
 
-            let malicious = rand.u8(..) & 0xF == 0xF;
+            let malicious = if rand.u8(..) & 0xF == 0xF {
+                NodeType::Malicious
+            } else {
+                NodeType::Normal
+            };
 
             network.nodes.get_mut().insert(Node {
-                name: None,
-                ip,
-                malicious,
-                color: if malicious {
-                    piet::Color::RED
-                } else {
-                    piet::Color::TEAL
-                },
-                posn: origin,
+                shared: Arc::new(SharedNode {
+                    name: None,
+                    ip,
+                    ty: malicious,
+                    color: if malicious == NodeType::Malicious {
+                        piet::Color::RED
+                    } else {
+                        piet::Color::TEAL
+                    },
+                    posn: origin,
+                }),
                 brush: None,
                 text: None,
             });
@@ -386,11 +398,13 @@ impl Network {
             .unwrap();
 
         let router = network.nodes.borrow_mut().insert(Node {
-            name: Some("Router".to_string()),
-            ip: rand.u32(0x1000_0000..=0xEFFF_FFFF),
-            malicious: false,
-            color: piet::Color::GREEN,
-            posn: Point::new((width as f64 * NODE_X_SPACING) / 2.0, max_height + 300.0),
+            shared: Arc::new(SharedNode {
+                name: Some("Router".to_string()),
+                ip: rand.u32(0x1000_0000..=0xEFFF_FFFF),
+                ty: NodeType::Router,
+                color: piet::Color::GREEN,
+                posn: Point::new((width as f64 * NODE_X_SPACING) / 2.0, max_height + 300.0),
+            }),
             brush: None,
             text: None,
         });
@@ -403,11 +417,13 @@ impl Network {
         // Add the target nodes to the network.
         for (i, name) in COOL_NAMES.iter().enumerate() {
             let site = network.nodes.borrow_mut().insert(Node {
-                name: Some(format!("{name}.cs645.net")),
-                ip: rand.u32(0xC0A8_0101..=0xC0A8_01FF),
-                malicious: false,
-                color: piet::Color::OLIVE,
-                posn: (i as f64 * NODE_X_SPACING, max_height + 600.0).into(),
+                shared: Arc::new(SharedNode {
+                    name: Some(format!("{name}.cs645.net")),
+                    ip: rand.u32(0xC0A8_0101..=0xC0A8_01FF),
+                    ty: NodeType::Site,
+                    color: piet::Color::OLIVE,
+                    posn: (i as f64 * NODE_X_SPACING, max_height + 600.0).into(),
+                }),
                 brush: None,
                 text: None,
             });
@@ -416,6 +432,57 @@ impl Network {
         }
 
         network
+    }
+
+    fn spawn_packet_driver(&self) {
+        let nodes = self
+            .nodes
+            .borrow()
+            .iter()
+            .map(|(_, node)| node.shared.clone())
+            .collect::<Vec<_>>();
+        let edges = self.edges.clone();
+        let frequency = self.update_frequency.clone();
+
+        thread::Builder::new()
+            .name("Packet Driver".to_string())
+            .spawn(move || {
+                let rng = fastrand::Rng::new();
+
+                let wait = move || {
+                    let frequency = *frequency.lock().unwrap();
+                    thread::sleep(frequency);
+                };
+
+                loop {
+                    // Choose either a malicious or benign packet.
+                    let malicious = if rng.u8(..) & 1 == 0 {
+                        NodeType::Malicious
+                    } else {
+                        NodeType::Normal
+                    };
+                    let chosen_sources = nodes
+                        .iter()
+                        .filter(|node| node.ty == malicious)
+                        .collect::<Vec<_>>();
+
+                    // Destination is always a site.
+                    let chosen_destinations = nodes
+                        .iter()
+                        .filter(|node| node.ty == NodeType::Site)
+                        .collect::<Vec<_>>();
+
+                    // Choose a random source and destination.
+                    let source = chosen_sources[rng.usize(..chosen_sources.len())];
+                    let destination = chosen_destinations[rng.usize(..chosen_destinations.len())];
+
+                    // Generate a path between them.
+                    // TODO
+
+                    wait();
+                }
+            })
+            .expect("Failed to spawn packet driver thread!");
     }
 
     fn draw(&mut self, context: &mut RenderContext<'_, '_>) {
@@ -454,15 +521,19 @@ impl Network {
 
 struct Node {
     // Node data.
-    name: Option<String>,
-    ip: u32,
-    malicious: bool,
-    color: piet::Color,
-    posn: Point,
+    shared: Arc<SharedNode>,
 
     // Drawing utilities.
     brush: Option<Brush>,
     text: Option<TextLayout>,
+}
+
+struct SharedNode {
+    name: Option<String>,
+    ip: u32,
+    ty: NodeType,
+    color: piet::Color,
+    posn: Point,
 }
 
 const NODE_WIDTH: f64 = 175.0;
@@ -470,7 +541,7 @@ const NODE_HEIGHT: f64 = 125.0;
 
 impl Node {
     fn rectangle(&self) -> Rect {
-        Rect::from_origin_size(self.posn, (NODE_WIDTH, NODE_HEIGHT))
+        Rect::from_origin_size(self.shared.posn, (NODE_WIDTH, NODE_HEIGHT))
     }
 
     fn draw(&mut self, context: &mut RenderContext<'_, '_>, outline_brush: &Brush) {
@@ -479,10 +550,10 @@ impl Node {
         let rect = RoundedRect::from_rect(self.rectangle(), NODE_RADIUS);
         let brush = self
             .brush
-            .get_or_insert_with(|| context.solid_brush(self.color));
+            .get_or_insert_with(|| context.solid_brush(self.shared.color));
         let layout = self.text.get_or_insert_with(|| {
             let text = {
-                let ip_octets = self.ip.to_be_bytes();
+                let ip_octets = self.shared.ip.to_be_bytes();
                 let mut text = "IP: ".to_string();
 
                 // Write the IP address.
@@ -491,7 +562,7 @@ impl Node {
                 }
 
                 // Write the node name, if any.
-                if let Some(name) = &self.name {
+                if let Some(name) = &self.shared.name {
                     write!(text, "\nName: {name}").unwrap();
                 }
 
@@ -518,4 +589,12 @@ impl Node {
         };
         context.draw_text(layout, text_origin);
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+enum NodeType {
+    Normal,
+    Malicious,
+    Router,
+    Site,
 }
