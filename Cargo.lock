@@ -285,6 +285,7 @@ dependencies = [
 name = "cs-645-research-paper"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "piet",
  "slab",
  "theo",

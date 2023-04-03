@@ -1,15 +1,31 @@
-use piet::RenderContext as _;
+use piet::{FontFamily, FontWeight, RenderContext as _, Text, TextAttribute, TextLayoutBuilder};
 
+use piet::kurbo::{Affine, Line, Point, Rect, RoundedRect, Vec2};
 use slab::Slab;
 
+use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use winit::dpi::LogicalSize;
-use winit::event::{Event, WindowEvent};
+use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{EventLoop, EventLoopBuilder};
 use winit::window::WindowBuilder;
 
-use theo::{Brush, Display, RenderContext};
+use theo::{Brush, Display, RenderContext, TextLayout};
+
+const COOL_NAMES: &[&str] = &[
+    "snake",
+    "solid",
+    "liquid",
+    "raiden",
+    "mario",
+    "kirby",
+    "pikachu",
+    "hulk",
+    "spiderman",
+    "metaverse",
+];
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -57,7 +73,8 @@ fn main2(evl: EventLoop<()>) {
     let mut next_frame = Instant::now() + framerate;
 
     let mut state = None;
-    let mut network = Network::default();
+    let mut dragging = DragState::NotDragging;
+    let mut network = Network::new(0xDEADBEEF);
 
     // Run the event loop.
     evl.run(move |event, elwt, control_flow| {
@@ -73,7 +90,10 @@ fn main2(evl: EventLoop<()>) {
                         window_builder = window_builder.with_transparent(false);
                     }
 
-                    #[cfg(x11_platform)]
+                    #[cfg(all(
+                        unix,
+                        not(any(target_os = "ios", target_os = "macos", target_os = "android"))
+                    ))]
                     {
                         use winit::platform::x11::WindowBuilderExtX11;
 
@@ -100,12 +120,49 @@ fn main2(evl: EventLoop<()>) {
             Event::Suspended => {
                 // Bail out of the window and GL context.
                 state = None;
+                dragging = DragState::NotDragging;
             }
 
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
             } => control_flow.set_exit(),
+
+            Event::WindowEvent {
+                event:
+                    WindowEvent::MouseInput {
+                        state,
+                        button: MouseButton::Left,
+                        ..
+                    },
+                ..
+            } => match state {
+                ElementState::Pressed => dragging = DragState::Dragging { last_point: None },
+                ElementState::Released => dragging = DragState::NotDragging,
+            },
+
+            Event::WindowEvent {
+                event: WindowEvent::CursorMoved { position, .. },
+                ..
+            } => {
+                if let DragState::Dragging { last_point } = &mut dragging {
+                    if let Some(last_point) = last_point.replace(position) {
+                        let delta = Vec2::new(position.x - last_point.x, position.y - last_point.y);
+                        network.origin += delta;
+                    }
+                }
+            }
+
+            Event::WindowEvent {
+                event:
+                    WindowEvent::MouseWheel {
+                        delta: MouseScrollDelta::LineDelta(_, y),
+                        ..
+                    },
+                ..
+            } => {
+                network.scale *= 1.0 + y as f64 * 0.1;
+            }
 
             Event::RedrawEventsCleared => {
                 if Instant::now() < next_frame {
@@ -141,41 +198,324 @@ fn main2(evl: EventLoop<()>) {
     })
 }
 
+enum DragState {
+    NotDragging,
+    Dragging {
+        last_point: Option<PhysicalPosition<f64>>,
+    },
+}
+
 #[derive(Default)]
 struct Network {
     // Nodes and edges.
-    nodes: Slab<Node>,
+    nodes: RefCell<Slab<Node>>,
     edges: Vec<(usize, usize)>,
 
     // Drawing utilities.
+    origin: Point,
+    scale: f64,
     black_brush: Option<Brush>,
     orange_brush: Option<Brush>,
 }
 
-impl Network {
-    fn draw<R: piet::RenderContext<Brush = Brush>>(&mut self, context: &mut R)
-    where
-        Brush: piet::IntoBrush<R>,
-    {
-        let rect = piet::kurbo::RoundedRect::new(25.0, 25.0, 200.0, 125.0, 10.0);
+const NODE_X_SPACING: f64 = NODE_WIDTH + 100.0;
+const NODE_Y_SPACING: f64 = NODE_HEIGHT + 100.0;
 
+impl Network {
+    fn new(seed: u64) -> Self {
+        let rand = fastrand::Rng::with_seed(seed);
+
+        let mut network = Network {
+            scale: 1.0,
+            ..Default::default()
+        };
+
+        // Generate broader internet.
+        let width = 10;
+        let node_count = rand.usize(50..100);
+        for i in 0..node_count {
+            let origin = {
+                let x = i % width;
+                let y = i / width;
+
+                Point::new(x as f64 * NODE_X_SPACING, y as f64 * NODE_Y_SPACING)
+            };
+
+            let ip = loop {
+                let ip = rand.u32(0x1000_0000..=0xEFFF_FFFF);
+
+                if ip & 0xFFFF_FF00 != 0xC0A8_0100 {
+                    break ip;
+                }
+            };
+
+            let malicious = rand.u8(..) & 0xF == 0xF;
+
+            network.nodes.get_mut().insert(Node {
+                name: None,
+                ip,
+                malicious,
+                color: if malicious {
+                    piet::Color::RED
+                } else {
+                    piet::Color::TEAL
+                },
+                posn: origin,
+                brush: None,
+                text: None,
+            });
+        }
+
+        // Link two nodes together.
+        let mut link_two_nodes = |start: usize, end: usize| {
+            let end_posn = network.nodes.borrow()[end].rectangle().origin();
+
+            let mut current = start;
+            let mut i = 0;
+
+            while current != end {
+                // Get the index of every neighbor of the current node.
+                let neighbors = {
+                    let mut neighbors = vec![
+                        current.saturating_sub(width).saturating_sub(1),
+                        current.saturating_sub(width),
+                        current.saturating_sub(width).saturating_add(1),
+                        current.saturating_sub(1),
+                        current.saturating_add(1),
+                        current.saturating_add(width).saturating_sub(1),
+                        current.saturating_add(width),
+                        current.saturating_add(width).saturating_add(1),
+                    ];
+
+                    // Remove any neighbors that are out of bounds.
+                    neighbors.sort_unstable();
+                    neighbors.dedup();
+                    neighbors.retain(|&index| index < network.nodes.borrow().len());
+
+                    let current_origin = network.nodes.borrow()[current].rectangle().origin();
+                    neighbors.retain(|&index| {
+                        let index_origin = network.nodes.borrow()[index].rectangle().origin();
+                        (index_origin - current_origin).hypot() <= (NODE_WIDTH * 3.0)
+                    });
+
+                    neighbors
+                };
+
+                if neighbors.is_empty() {
+                    panic!("No neighbors found! ({} -> {})", start, end);
+                }
+
+                // Find the neighbor closest to the end node.
+                let closest_neighbor = {
+                    // If any of the neighbors are the end node, we're done.
+                    if neighbors.contains(&end) {
+                        end
+                    } else {
+                        neighbors
+                            .iter()
+                            .min_by_key(|&&index| {
+                                let neighbor_posn =
+                                    network.nodes.borrow()[index].rectangle().origin();
+                                (neighbor_posn - end_posn).hypot() as i32
+                            })
+                            .copied()
+                            .unwrap()
+                    }
+                };
+
+                // Add the edge if it doesn't already exist.
+                if !network.edges.contains(&(current, closest_neighbor)) {
+                    network.edges.push((current, closest_neighbor));
+                }
+
+                tracing::info!("[{}->{}]: {} -> {}", start, end, current, closest_neighbor);
+
+                current = closest_neighbor;
+
+                i += 1;
+                if i > 10_000 {
+                    panic!("Infinite loop detected! ({} -> {})", start, end);
+                }
+            }
+        };
+
+        // Start the tree off with two nodes.
+        let mut linked_nodes = {
+            let (n1, n2) = loop {
+                let n1 = rand.usize(..network.nodes.borrow().len());
+                let n2 = rand.usize(..network.nodes.borrow().len());
+
+                if n1 != n2 {
+                    break (n1, n2);
+                }
+            };
+
+            link_two_nodes(n1, n2);
+            vec![n1, n2]
+        };
+
+        // Add more nodes until all nodes are connected.
+        loop {
+            let mut progress_made = false;
+
+            for i in 0..node_count {
+                if !linked_nodes.contains(&i) {
+                    let start = {
+                        let index = rand.usize(..linked_nodes.len());
+                        linked_nodes[index]
+                    };
+                    link_two_nodes(start, i);
+                    linked_nodes.push(i);
+                    progress_made = true;
+                    break;
+                }
+            }
+
+            if !progress_made {
+                break;
+            }
+        }
+
+        // Add the router node to the network.
+        let max_height = network
+            .nodes
+            .borrow()
+            .iter()
+            .map(|(_, node)| node.rectangle().max_y())
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+
+        let router = network.nodes.borrow_mut().insert(Node {
+            name: Some("Router".to_string()),
+            ip: rand.u32(0x1000_0000..=0xEFFF_FFFF),
+            malicious: false,
+            color: piet::Color::GREEN,
+            posn: Point::new((width as f64 * NODE_X_SPACING) / 2.0, max_height + 300.0),
+            brush: None,
+            text: None,
+        });
+
+        // Link to all of the bottom nodes.
+        for i in (node_count - width)..node_count {
+            network.edges.push((router, i));
+        }
+
+        // Add the target nodes to the network.
+        for (i, name) in COOL_NAMES.iter().enumerate() {
+            let site = network.nodes.borrow_mut().insert(Node {
+                name: Some(format!("{name}.cs645.net")),
+                ip: rand.u32(0xC0A8_0101..=0xC0A8_01FF),
+                malicious: false,
+                color: piet::Color::OLIVE,
+                posn: (i as f64 * NODE_X_SPACING, max_height + 600.0).into(),
+                brush: None,
+                text: None,
+            });
+
+            network.edges.push((router, site));
+        }
+
+        network
+    }
+
+    fn draw(&mut self, context: &mut RenderContext<'_, '_>) {
         let black_brush = self
             .black_brush
             .get_or_insert_with(|| context.solid_brush(piet::Color::rgb(0.1, 0.2, 0.1)));
         let orange_brush = self
             .orange_brush
-            .get_or_insert_with(|| context.solid_brush(piet::Color::TEAL));
+            .get_or_insert_with(|| context.solid_brush(piet::Color::rgb(0.9, 0.6, 0.1)));
 
-        context.fill(rect, orange_brush);
-        context.stroke(rect, black_brush, 5.0);
+        context
+            .with_save(|context| {
+                // Transform.
+                context.transform(
+                    Affine::translate(self.origin.to_vec2()) * Affine::scale(self.scale),
+                );
 
-        // TODO: Draw nodes.
+                // Draw edges.
+                for (start, end) in self.edges.iter() {
+                    let get_origin = |index| self.nodes.borrow()[index].rectangle().center();
+
+                    let (start_pt, end_pt) = (get_origin(*start), get_origin(*end));
+                    context.stroke(Line::new(start_pt, end_pt), orange_brush, 20.0)
+                }
+
+                // Draw nodes.
+                for (_, node) in self.nodes.borrow_mut().iter_mut() {
+                    node.draw(context, black_brush);
+                }
+
+                Ok(())
+            })
+            .unwrap();
     }
 }
 
 struct Node {
+    // Node data.
     name: Option<String>,
     ip: u32,
+    malicious: bool,
     color: piet::Color,
-    posn: (f64, f64),
+    posn: Point,
+
+    // Drawing utilities.
+    brush: Option<Brush>,
+    text: Option<TextLayout>,
+}
+
+const NODE_WIDTH: f64 = 175.0;
+const NODE_HEIGHT: f64 = 125.0;
+
+impl Node {
+    fn rectangle(&self) -> Rect {
+        Rect::from_origin_size(self.posn, (NODE_WIDTH, NODE_HEIGHT))
+    }
+
+    fn draw(&mut self, context: &mut RenderContext<'_, '_>, outline_brush: &Brush) {
+        const NODE_RADIUS: f64 = 10.0;
+
+        let rect = RoundedRect::from_rect(self.rectangle(), NODE_RADIUS);
+        let brush = self
+            .brush
+            .get_or_insert_with(|| context.solid_brush(self.color));
+        let layout = self.text.get_or_insert_with(|| {
+            let text = {
+                let ip_octets = self.ip.to_be_bytes();
+                let mut text = "IP: ".to_string();
+
+                // Write the IP address.
+                for (i, octet) in ip_octets.iter().enumerate() {
+                    write!(text, "{}{}", if i > 0 { "." } else { "" }, octet).unwrap();
+                }
+
+                // Write the node name, if any.
+                if let Some(name) = &self.name {
+                    write!(text, "\nName: {name}").unwrap();
+                }
+
+                text
+            };
+
+            context
+                .text()
+                .new_text_layout(text)
+                .font(FontFamily::SANS_SERIF, 12.0)
+                .default_attribute(TextAttribute::Weight(FontWeight::BOLD))
+                .max_width(NODE_WIDTH - 10.0)
+                .text_color(piet::Color::rgb(0.1, 0.1, 0.1))
+                .build()
+                .expect("Failed to build text layout")
+        });
+
+        context.fill(rect, brush);
+        context.stroke(rect, outline_brush, 5.0);
+        let text_origin = {
+            let mut text_origin = rect.origin();
+            text_origin.x += 5.0;
+            text_origin
+        };
+        context.draw_text(layout, text_origin);
+    }
 }
