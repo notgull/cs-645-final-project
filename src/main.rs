@@ -1,3 +1,5 @@
+mod filter;
+
 use piet::{FontFamily, FontWeight, RenderContext as _, Text, TextAttribute, TextLayoutBuilder};
 
 use piet::kurbo::{Affine, Line, Point, Rect, RoundedRect, Vec2};
@@ -5,7 +7,6 @@ use slab::Slab;
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::ops::Shr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -465,6 +466,8 @@ impl Network {
                     thread::sleep(frequency);
                 };
 
+                let mut filt = filter::Filter::default();
+
                 loop {
                     // Choose either a malicious or benign packet.
                     let desired_type = if rng.u8(..) & 1 == 0 {
@@ -492,6 +495,7 @@ impl Network {
                     // Generate a path between them.
                     let mut path = pathfinder(&nodes, &edges, source, destination);
                     path.insert(0, source);
+                    let source_ip = nodes[source].ip;
 
                     let traverse_path = |path: &[usize]| {
                         let is_malicious = matches!(desired_type, NodeType::Malicious);
@@ -502,6 +506,7 @@ impl Network {
                             *packet = Some(Packet {
                                 posn: nodes[item].rectangle().center(),
                                 malicious: is_malicious,
+                                ip: source_ip,
                             });
                             drop(packet);
 
@@ -520,6 +525,7 @@ impl Network {
                                 *packet = Some(Packet {
                                     posn: centerpoint,
                                     malicious: is_malicious,
+                                    ip: source_ip,
                                 });
                                 drop(packet);
 
@@ -531,6 +537,13 @@ impl Network {
                     traverse_path(&path);
 
                     wait();
+
+                    if let Some(ip) =
+                        filter::Ids.report(packet_lock.lock().unwrap().as_ref().unwrap())
+                    {
+                        filt.hit_ip(ip);
+                    }
+                    filt.tick();
                 }
             })
             .expect("Failed to spawn packet driver thread!");
@@ -668,6 +681,9 @@ struct Packet {
 
     /// Is this a malicious packet?
     malicious: bool,
+
+    /// Source IP address.
+    ip: u32,
 }
 
 impl Packet {
