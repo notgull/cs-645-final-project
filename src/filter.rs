@@ -2,7 +2,7 @@ use super::Packet;
 use std::collections::HashMap;
 
 /// The filter running on the router.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Filter {
     /// Current filtered IP.
     pub filters: Vec<FilteredIp>,
@@ -11,6 +11,7 @@ pub struct Filter {
     pub remembered: HashMap<u32, RememberedIp>,
 }
 
+#[derive(Clone)]
 pub struct FilteredIp {
     /// The IP address of the node.
     pub ip: u32,
@@ -19,6 +20,7 @@ pub struct FilteredIp {
     pub tick: u32,
 }
 
+#[derive(Clone)]
 pub struct RememberedIp {
     /// The IP address of the node.
     pub ip: u32,
@@ -27,6 +29,7 @@ pub struct RememberedIp {
     pub duration: RememberedIpState,
 }
 
+#[derive(Clone)]
 pub enum RememberedIpState {
     /// Grace period, if we get this number more flags, we filter.
     GracePeriod(usize),
@@ -88,18 +91,35 @@ impl Filter {
 pub struct Ids;
 
 impl Ids {
-    pub fn report(&self, packet: &Packet) -> Option<u32> {
-        const FALSE_POSITIVE_RATE: f32 = 0.1;
+    pub(crate) fn report(&self, packet: &Packet) -> ReportResult {
+        const FALSE_POSITIVE_RATE: f32 = 0.33;
 
-        let mut is_malicious = packet.malicious;
-        if fastrand::f32() < FALSE_POSITIVE_RATE {
-            is_malicious = !is_malicious;
+        let is_malicious = packet.malicious;
+        let fp = fastrand::f32() < FALSE_POSITIVE_RATE;
+
+        match (is_malicious, fp) {
+            (true, true) => ReportResult::FalseNegative,
+            (true, false) => ReportResult::TruePositive(packet.ip),
+            (false, true) => ReportResult::FalsePositive(packet.ip),
+            (false, false) => ReportResult::TrueNegative,
         }
+    }
+}
 
-        if is_malicious {
-            Some(packet.ip)
-        } else {
-            None
+#[derive(Clone)]
+pub enum ReportResult {
+    FalsePositive(u32),
+    FalseNegative,
+    TruePositive(u32),
+    TrueNegative,
+}
+
+impl ReportResult {
+    pub fn positive(&self) -> Option<u32> {
+        match self {
+            ReportResult::FalsePositive(ip) => Some(*ip),
+            ReportResult::TruePositive(ip) => Some(*ip),
+            _ => None,
         }
     }
 }

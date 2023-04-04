@@ -236,7 +236,7 @@ impl Network {
 
         let mut network = Network {
             scale: 1.0,
-            update_frequency: Arc::new(Mutex::new(Duration::from_millis(500))),
+            update_frequency: Arc::new(Mutex::new(Duration::from_millis(50))),
             ..Default::default()
         };
 
@@ -459,6 +459,8 @@ impl Network {
         thread::Builder::new()
             .name("Packet Driver".to_string())
             .spawn(move || {
+                use filter::ReportResult::*;
+
                 let rng = fastrand::Rng::new();
 
                 let wait = move || {
@@ -508,6 +510,16 @@ impl Network {
                                 malicious: is_malicious,
                                 ip: source_ip,
                             });
+
+                            // Try filtering it if we're the router.
+                            if nodes[item].ty == NodeType::Router {
+                                if filt.filters(packet.as_ref().unwrap().ip) {
+                                    *packet = None;
+                                    println!("Filtered the packet");
+                                    return false;
+                                }
+                            }
+
                             drop(packet);
 
                             wait();
@@ -532,18 +544,30 @@ impl Network {
                                 wait();
                             }
                         }
+
+                        true
                     };
 
-                    traverse_path(&path);
+                    if !traverse_path(&path) {
+                        // Packet was dropped, try again.
+                        wait();
+                        continue;
+                    }
 
                     wait();
 
-                    if let Some(ip) =
-                        filter::Ids.report(packet_lock.lock().unwrap().as_ref().unwrap())
-                    {
+                    let report = filter::Ids.report(packet_lock.lock().unwrap().as_ref().unwrap());
+                    if let Some(ip) = report.positive() {
                         filt.hit_ip(ip);
                     }
                     filt.tick();
+
+                    match report {
+                        FalseNegative => println!("False negative!"),
+                        FalsePositive(_) => println!("False positive!"),
+                        TruePositive(_) => println!("True positive"),
+                        TrueNegative => println!("True negative"),
+                    }
                 }
             })
             .expect("Failed to spawn packet driver thread!");
