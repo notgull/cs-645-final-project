@@ -216,6 +216,9 @@ struct Network {
     edges: Vec<(usize, usize)>,
     update_frequency: Arc<Mutex<Duration>>,
 
+    // The packet.
+    packet_state: Arc<Mutex<Option<Packet>>>,
+
     // Drawing utilities.
     origin: Point,
     scale: f64,
@@ -261,6 +264,7 @@ impl Network {
                 NodeType::Normal
             };
 
+            let vacant = network.nodes.borrow_mut().vacant_key();
             network.nodes.get_mut().insert(Node {
                 shared: Arc::new(SharedNode {
                     name: None,
@@ -272,6 +276,7 @@ impl Network {
                         piet::Color::TEAL
                     },
                     posn: origin,
+                    index: vacant,
                 }),
                 brush: None,
                 text: None,
@@ -338,6 +343,7 @@ impl Network {
                 // Add the edge if it doesn't already exist.
                 if !network.edges.contains(&(current, closest_neighbor)) {
                     network.edges.push((current, closest_neighbor));
+                    network.edges.push((closest_neighbor, current));
                 }
 
                 tracing::info!("[{}->{}]: {} -> {}", start, end, current, closest_neighbor);
@@ -397,6 +403,7 @@ impl Network {
             .max_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap();
 
+        let vacant = network.nodes.borrow_mut().vacant_key();
         let router = network.nodes.borrow_mut().insert(Node {
             shared: Arc::new(SharedNode {
                 name: Some("Router".to_string()),
@@ -404,6 +411,7 @@ impl Network {
                 ty: NodeType::Router,
                 color: piet::Color::GREEN,
                 posn: Point::new((width as f64 * NODE_X_SPACING) / 2.0, max_height + 300.0),
+                index: vacant,
             }),
             brush: None,
             text: None,
@@ -416,6 +424,7 @@ impl Network {
 
         // Add the target nodes to the network.
         for (i, name) in COOL_NAMES.iter().enumerate() {
+            let vacant = network.nodes.borrow_mut().vacant_key();
             let site = network.nodes.borrow_mut().insert(Node {
                 shared: Arc::new(SharedNode {
                     name: Some(format!("{name}.cs645.net")),
@@ -423,6 +432,7 @@ impl Network {
                     ty: NodeType::Site,
                     color: piet::Color::OLIVE,
                     posn: (i as f64 * NODE_X_SPACING, max_height + 600.0).into(),
+                    index: vacant,
                 }),
                 brush: None,
                 text: None,
@@ -443,6 +453,7 @@ impl Network {
             .collect::<Vec<_>>();
         let edges = self.edges.clone();
         let frequency = self.update_frequency.clone();
+        let packet = self.packet_state.clone();
 
         thread::Builder::new()
             .name("Packet Driver".to_string())
@@ -456,14 +467,14 @@ impl Network {
 
                 loop {
                     // Choose either a malicious or benign packet.
-                    let malicious = if rng.u8(..) & 1 == 0 {
+                    let desired_type = if rng.u8(..) & 1 == 0 {
                         NodeType::Malicious
                     } else {
                         NodeType::Normal
                     };
                     let chosen_sources = nodes
                         .iter()
-                        .filter(|node| node.ty == malicious)
+                        .filter(|node| node.ty == desired_type)
                         .collect::<Vec<_>>();
 
                     // Destination is always a site.
@@ -473,11 +484,31 @@ impl Network {
                         .collect::<Vec<_>>();
 
                     // Choose a random source and destination.
-                    let source = chosen_sources[rng.usize(..chosen_sources.len())];
-                    let destination = chosen_destinations[rng.usize(..chosen_destinations.len())];
+                    let source = rng.usize(..chosen_sources.len());
+                    let destination = rng.usize(..chosen_destinations.len());
+                    let source = chosen_sources[source].index;
+                    let destination = chosen_destinations[destination].index;
 
                     // Generate a path between them.
-                    // TODO
+                    let mut path = pathfinder(&nodes, &edges, source, destination);
+                    path.insert(0, source);
+
+                    let traverse_path = |path: &[usize]| {
+                        let is_malicious = matches!(desired_type, NodeType::Malicious);
+                
+                        for item in path.iter().copied() {
+                            let mut packet = packet.lock().unwrap();
+                            *packet = Some(Packet {
+                                posn: nodes[item].rectangle().center(),
+                                malicious: is_malicious
+                            });
+                            drop(packet);
+
+                            wait();
+                        }
+                    };
+
+                    traverse_path(&path);
 
                     wait();
                 }
@@ -513,6 +544,11 @@ impl Network {
                     node.draw(context, black_brush);
                 }
 
+                // Draw the packet.
+                if let Some(packet) = &mut *self.packet_state.lock().unwrap() {
+                    packet.draw(context);
+                }
+
                 Ok(())
             })
             .unwrap();
@@ -534,14 +570,21 @@ struct SharedNode {
     ty: NodeType,
     color: piet::Color,
     posn: Point,
+    index: usize,
 }
 
 const NODE_WIDTH: f64 = 175.0;
 const NODE_HEIGHT: f64 = 125.0;
 
+impl SharedNode {
+    fn rectangle(&self) -> Rect {
+        Rect::from_origin_size(self.posn, (NODE_WIDTH, NODE_HEIGHT))
+    }
+}
+
 impl Node {
     fn rectangle(&self) -> Rect {
-        Rect::from_origin_size(self.shared.posn, (NODE_WIDTH, NODE_HEIGHT))
+        self.shared.rectangle()
     }
 
     fn draw(&mut self, context: &mut RenderContext<'_, '_>, outline_brush: &Brush) {
@@ -597,4 +640,126 @@ enum NodeType {
     Malicious,
     Router,
     Site,
+}
+
+struct Packet {
+    /// The position of the packet.
+    posn: Point,
+
+    /// Is this a malicious packet?
+    malicious: bool,
+}
+
+impl Packet {
+    fn rectangle(&self) -> Rect {
+        const PACKET_WIDTH: f64 = 100.0;
+        const PACKET_HEIGHT: f64 = 50.0;
+
+        Rect::from_center_size(self.posn, (PACKET_WIDTH, PACKET_HEIGHT))
+    }
+
+    fn draw(&self, context: &mut RenderContext<'_, '_>) {
+        const PACKET_RADIUS: f64 = 10.0;
+
+        let rect = RoundedRect::from_rect(self.rectangle(), PACKET_RADIUS);
+        let brush = context.solid_brush(if self.malicious {
+            piet::Color::rgb(0.9, 0.1, 0.1)
+        } else {
+            piet::Color::rgb(0.1, 0.1, 0.9)
+        });
+        let outline_brush = context.solid_brush(if self.malicious {
+            piet::Color::rgb(0.7, 0.1, 0.1)
+        } else {
+            piet::Color::rgb(0.1, 0.1, 0.7)
+        });
+
+        context.fill(rect, &brush);
+        context.stroke(rect, &outline_brush, 5.0);
+    }
+}
+
+/// Find the path between two nodes.
+fn pathfinder(
+    nodes: &[Arc<SharedNode>],
+    edges: &[(usize, usize)],
+    start: usize,
+    end: usize,
+) -> Vec<usize> {
+    use std::cmp::{self, Reverse};
+    use std::collections::BinaryHeap;
+
+    struct HeapEntry {
+        distance: f64,
+        node: usize,
+    }
+
+    impl PartialEq for HeapEntry {
+        fn eq(&self, other: &Self) -> bool {
+            self.distance == other.distance
+        }
+    }
+
+    impl Eq for HeapEntry {}
+
+    impl PartialOrd for HeapEntry {
+        fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+            other.distance.partial_cmp(&self.distance)
+        }
+    }
+
+    impl Ord for HeapEntry {
+        fn cmp(&self, other: &Self) -> cmp::Ordering {
+            other.distance.partial_cmp(&self.distance).unwrap()
+        }
+    }
+
+    // Use Dijkstra's algorithm to find the shortest path between the two nodes.
+    let mut distances = vec![std::f64::INFINITY; nodes.len()];
+    let mut previous = vec![None; nodes.len()];
+
+    distances[start] = 0.0;
+
+    let mut queue = BinaryHeap::new();
+    queue.push(Reverse(HeapEntry {
+        distance: 0.0,
+        node: start,
+    }));
+
+    while let Some(Reverse(HeapEntry { distance, node })) = queue.pop() {
+        if distance > distances[node] {
+            continue;
+        }
+
+        for (start, end) in edges.iter() {
+            let (start, end) = (*start, *end);
+            let (start, end) = if start == node {
+                (start, end)
+            } else if end == node {
+                (end, start)
+            } else {
+                continue;
+            };
+
+            let new_distance = distances[start] + nodes[start].posn.distance(nodes[end].posn);
+            if new_distance < distances[end] {
+                distances[end] = new_distance;
+                previous[end] = Some(start);
+                queue.push(Reverse(HeapEntry {
+                    distance: new_distance,
+                    node: end,
+                }));
+            }
+        }
+    }
+
+    // Reconstruct the path.
+    let mut path = Vec::new();
+    let mut node = end;
+    while let Some(prev) = previous[node] {
+        path.push(node);
+        node = prev;
+    }
+
+    path.reverse();
+    path
 }
