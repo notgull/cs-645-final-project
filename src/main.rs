@@ -453,7 +453,7 @@ impl Network {
             .collect::<Vec<_>>();
         let edges = self.edges.clone();
         let frequency = self.update_frequency.clone();
-        let packet = self.packet_state.clone();
+        let packet_lock = self.packet_state.clone();
 
         thread::Builder::new()
             .name("Packet Driver".to_string())
@@ -495,16 +495,36 @@ impl Network {
 
                     let traverse_path = |path: &[usize]| {
                         let is_malicious = matches!(desired_type, NodeType::Malicious);
-                
-                        for item in path.iter().copied() {
-                            let mut packet = packet.lock().unwrap();
+
+                        for (i, item) in path.iter().copied().enumerate() {
+                            // Put the packet on the current node.
+                            let mut packet = packet_lock.lock().unwrap();
                             *packet = Some(Packet {
                                 posn: nodes[item].rectangle().center(),
-                                malicious: is_malicious
+                                malicious: is_malicious,
                             });
                             drop(packet);
 
                             wait();
+
+                            // If this isn't the end, also put the packet on the edge.
+                            if i != path.len() - 1 {
+                                let mut packet = packet_lock.lock().unwrap();
+                                let centerpoint = {
+                                    let c1 = nodes[item].rectangle().center();
+                                    let c2 = nodes[path[i + 1]].rectangle().center();
+
+                                    c1.midpoint(c2)
+                                };
+
+                                *packet = Some(Packet {
+                                    posn: centerpoint,
+                                    malicious: is_malicious,
+                                });
+                                drop(packet);
+
+                                wait();
+                            }
                         }
                     };
 
