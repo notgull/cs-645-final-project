@@ -12,7 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    ElementState, Event, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
+};
 use winit::event_loop::{EventLoop, EventLoopBuilder};
 use winit::window::WindowBuilder;
 
@@ -29,6 +31,10 @@ const COOL_NAMES: &[&str] = &[
     "hulk",
     "spiderman",
     "metaverse",
+];
+
+const SPEED_IN_MICROS: &[u64] = &[
+    1, 1_000, 10_000, 50_000, 250_000, 500_000, 1_000_000, 2_000_000,
 ];
 
 fn main() {
@@ -79,6 +85,8 @@ fn main2(evl: EventLoop<()>) {
     let mut state = None;
     let mut dragging = DragState::NotDragging;
     let mut network = Network::new(0xDEADBEEF);
+    let mut last_keypress = Instant::now();
+
     network.spawn_packet_driver();
 
     // Run the event loop.
@@ -145,6 +153,43 @@ fn main2(evl: EventLoop<()>) {
                 ElementState::Pressed => dragging = DragState::Dragging { last_point: None },
                 ElementState::Released => dragging = DragState::NotDragging,
             },
+
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput { input, .. },
+                ..
+            } => {
+                let since_last_press = Instant::now() - last_keypress;
+                if since_last_press < Duration::from_millis(100) {
+                    return;
+                }
+                last_keypress = Instant::now();
+
+                let direction = match input.virtual_keycode {
+                    Some(VirtualKeyCode::C) => -1isize,
+                    Some(VirtualKeyCode::D) => 1,
+                    _ => return,
+                };
+
+                println!("Bumping {direction}");
+
+                let mut frequency = network.update_frequency.lock().unwrap();
+                let new_freq = {
+                    let mut new_freq = (*frequency) as isize;
+                    new_freq += direction;
+
+                    let max_len = (SPEED_IN_MICROS.len() - 1) as isize;
+
+                    if new_freq < 0 {
+                        new_freq = 0;
+                    } else if new_freq > max_len {
+                        new_freq = max_len;
+                    }
+
+                    new_freq
+                };
+
+                *frequency = new_freq as usize;
+            }
 
             Event::WindowEvent {
                 event: WindowEvent::CursorMoved { position, .. },
@@ -215,7 +260,7 @@ struct Network {
     // Nodes and edges.
     nodes: RefCell<Slab<Node>>,
     edges: Vec<(usize, usize)>,
-    update_frequency: Arc<Mutex<Duration>>,
+    update_frequency: Arc<Mutex<usize>>,
 
     // The packet.
     packet_state: Arc<Mutex<Option<Packet>>>,
@@ -236,7 +281,7 @@ impl Network {
 
         let mut network = Network {
             scale: 1.0,
-            update_frequency: Arc::new(Mutex::new(Duration::from_millis(50))),
+            update_frequency: Arc::new(Mutex::new(5)),
             ..Default::default()
         };
 
@@ -465,7 +510,8 @@ impl Network {
 
                 let wait = move || {
                     let frequency = *frequency.lock().unwrap();
-                    thread::sleep(frequency);
+                    let timeout_micros = SPEED_IN_MICROS[frequency];
+                    thread::sleep(Duration::from_micros(timeout_micros));
                 };
 
                 let mut filt = filter::Filter::default();
