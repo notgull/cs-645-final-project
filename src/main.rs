@@ -870,7 +870,6 @@ impl Logger {
             }
         }
 
-        // TODO: draw
         // Draw a black rectangle at the top of the window.
         let rect = Rect::from_origin_size((0.0, 0.0), (window_width as f64, HEIGHT as f64));
         render_context.fill(rect, &piet::Color::rgb(0.2, 0.2, 0.2));
