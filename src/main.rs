@@ -6,7 +6,7 @@ use piet::kurbo::{Affine, Line, Point, Rect, RoundedRect, Vec2};
 use slab::Slab;
 
 use std::cell::RefCell;
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -523,6 +523,7 @@ impl Network {
         let edges = self.edges.clone();
         let frequency = self.update_frequency.clone();
         let packet_lock = self.packet_state.clone();
+        let log_recv = self.logger.sender.clone();
 
         thread::Builder::new()
             .name("Packet Driver".to_string())
@@ -585,6 +586,27 @@ impl Network {
                                 if filt.filters(packet.as_ref().unwrap().ip) {
                                     *packet = None;
                                     println!("Filtered the packet");
+                                    if is_malicious {
+                                        log_recv
+                                            .send((
+                                                LogType::Normal,
+                                                format!(
+                                                    "Malicious packet was filtered from {}",
+                                                    Ip(source_ip)
+                                                ),
+                                            ))
+                                            .unwrap();
+                                    } else {
+                                        log_recv
+                                            .send((
+                                                LogType::Red,
+                                                format!(
+                                                    "Benign packet was filtered from {}",
+                                                    Ip(source_ip)
+                                                ),
+                                            ))
+                                            .unwrap();
+                                    }
                                     return false;
                                 } else {
                                     //println!("Didn't filter the packet");
@@ -726,13 +748,7 @@ impl Node {
             .get_or_insert_with(|| context.solid_brush(self.shared.color));
         let layout = self.text.get_or_insert_with(|| {
             let text = {
-                let ip_octets = self.shared.ip.to_be_bytes();
-                let mut text = "IP: ".to_string();
-
-                // Write the IP address.
-                for (i, octet) in ip_octets.iter().enumerate() {
-                    write!(text, "{}{}", if i > 0 { "." } else { "" }, octet).unwrap();
-                }
+                let mut text = format!("IP: {}", Ip(self.shared.ip));
 
                 // Write the node name, if any.
                 if let Some(name) = &self.shared.name {
@@ -871,7 +887,7 @@ impl Logger {
         let mut builder = render_context
             .text()
             .new_text_layout(total_text)
-            .font(FontFamily::MONOSPACE, 20.0)
+            .font(FontFamily::MONOSPACE, 10.0)
             .default_attribute(TextAttribute::Weight(FontWeight::BOLD));
 
         let mut last_idx = 0;
@@ -899,7 +915,7 @@ impl Logger {
                 let layout_height = layout.size().height;
                 context.transform(Affine::translate((0.0, HEIGHT as f64 - layout_height)));
 
-                context.draw_text(&layout, (5.0, -5.0));
+                context.draw_text(&layout, (5.0, -1.0));
 
                 Ok(())
             })
@@ -991,4 +1007,19 @@ fn pathfinder(
 
     path.reverse();
     path
+}
+
+struct Ip(u32);
+
+impl fmt::Display for Ip {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}.{}.{}.{}",
+            self.0 >> 24,
+            (self.0 >> 16) & 0xFF,
+            (self.0 >> 8) & 0xFF,
+            self.0 & 0xFF
+        )
+    }
 }
