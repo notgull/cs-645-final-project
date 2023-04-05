@@ -7,7 +7,7 @@ use slab::Slab;
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -181,8 +181,30 @@ fn main2(evl: EventLoop<()>) {
 
                     if new_freq < 0 {
                         new_freq = 0;
+                        network
+                            .logger
+                            .sender
+                            .send((LogType::Red, "Already at fastest speed.".to_string()))
+                            .unwrap();
                     } else if new_freq > max_len {
                         new_freq = max_len;
+                        network
+                            .logger
+                            .sender
+                            .send((LogType::Red, "Already at slowest speed.".to_string()))
+                            .unwrap();
+                    } else if direction == -1 {
+                        network
+                            .logger
+                            .sender
+                            .send((LogType::Blue, "Speeding up.".to_string()))
+                            .unwrap();
+                    } else {
+                        network
+                            .logger
+                            .sender
+                            .send((LogType::Blue, "Slowing down.".to_string()))
+                            .unwrap();
                     }
 
                     new_freq
@@ -228,7 +250,7 @@ fn main2(evl: EventLoop<()>) {
 
                     // Draw the frame.
                     render_context.clear(None, piet::Color::PURPLE);
-                    network.draw(&mut render_context);
+                    network.draw(&mut render_context, window.inner_size().width);
 
                     // Clear and flush.
                     render_context
@@ -261,6 +283,7 @@ struct Network {
     nodes: RefCell<Slab<Node>>,
     edges: Vec<(usize, usize)>,
     update_frequency: Arc<Mutex<usize>>,
+    logger: Logger,
 
     // The packet.
     packet_state: Arc<Mutex<Option<Packet>>>,
@@ -621,7 +644,7 @@ impl Network {
             .expect("Failed to spawn packet driver thread!");
     }
 
-    fn draw(&mut self, context: &mut RenderContext<'_, '_>) {
+    fn draw(&mut self, context: &mut RenderContext<'_, '_>, window_width: u32) {
         let black_brush = self
             .black_brush
             .get_or_insert_with(|| context.solid_brush(piet::Color::rgb(0.1, 0.2, 0.1)));
@@ -657,6 +680,8 @@ impl Network {
                 Ok(())
             })
             .unwrap();
+
+        self.logger.draw(context, window_width);
     }
 }
 
@@ -783,6 +808,102 @@ impl Packet {
 
         context.fill(rect, &brush);
         context.stroke(rect, &outline_brush, 5.0);
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum LogType {
+    Normal,
+    Green,
+    Blue,
+    Red,
+}
+
+#[derive(Debug)]
+struct Logger {
+    sender: mpsc::Sender<(LogType, String)>,
+    recv: mpsc::Receiver<(LogType, String)>,
+    lines: Vec<(LogType, String)>,
+}
+
+impl Default for Logger {
+    fn default() -> Self {
+        let (sender, recv) = mpsc::channel();
+        Self {
+            sender,
+            recv,
+            lines: Vec::new(),
+        }
+    }
+}
+
+impl Logger {
+    fn draw(&mut self, render_context: &mut RenderContext<'_, '_>, window_width: u32) {
+        const MAX_LINES: usize = 20;
+        const HEIGHT: u32 = 95;
+
+        // Read in all lines.
+        for _ in 0..200 {
+            if let Ok(line) = self.recv.try_recv() {
+                self.lines.push(line);
+                while self.lines.len() > MAX_LINES {
+                    self.lines.remove(0);
+                }
+            } else {
+                break;
+            }
+        }
+
+        // TODO: draw
+        // Draw a black rectangle at the top of the window.
+        let rect = Rect::from_origin_size((0.0, 0.0), (window_width as f64, HEIGHT as f64));
+        render_context.fill(rect, &piet::Color::rgb(0.2, 0.2, 0.2));
+        render_context.stroke(rect, &piet::Color::rgb(0.0, 0.0, 0.0), 2.0);
+
+        // Create a text layout for the lines
+        let mut total_text = self
+            .lines
+            .iter()
+            .map(|(_, s)| format!("{s}\n"))
+            .collect::<String>();
+        total_text.pop();
+
+        let mut builder = render_context
+            .text()
+            .new_text_layout(total_text)
+            .font(FontFamily::MONOSPACE, 20.0)
+            .default_attribute(TextAttribute::Weight(FontWeight::BOLD));
+
+        let mut last_idx = 0;
+        for (color, line) in &self.lines {
+            let color = match color {
+                LogType::Normal => piet::Color::rgb(0.8, 0.8, 0.8),
+                LogType::Green => piet::Color::rgb(0.1, 0.9, 0.1),
+                LogType::Blue => piet::Color::rgb(0.1, 0.1, 0.9),
+                LogType::Red => piet::Color::rgb(0.9, 0.1, 0.1),
+            };
+
+            let idx = last_idx + line.len() + 1;
+            builder = builder.range_attribute(last_idx..idx, TextAttribute::TextColor(color));
+            last_idx = idx;
+        }
+
+        let layout = builder.build().expect("Failed to build text layout");
+
+        // Clip to the rectangle and shift up.
+        render_context
+            .with_save(|context| {
+                use piet::TextLayout;
+
+                context.clip(rect);
+                let layout_height = layout.size().height;
+                context.transform(Affine::translate((0.0, HEIGHT as f64 - layout_height)));
+
+                context.draw_text(&layout, (5.0, -5.0));
+
+                Ok(())
+            })
+            .unwrap();
     }
 }
 
