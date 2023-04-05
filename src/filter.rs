@@ -81,6 +81,8 @@ impl Filter {
 
                 if let Some(filt) = self.filters.iter_mut().find(|f| f.ip == *ip) {
                     filt.tick = *tick;
+                } else {
+                    self.filters.push(FilteredIp { ip: *ip, tick: *tick });
                 }
             }
         }

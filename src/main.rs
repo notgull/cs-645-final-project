@@ -517,6 +517,8 @@ impl Network {
                                     *packet = None;
                                     println!("Filtered the packet");
                                     return false;
+                                } else {
+                                    //println!("Didn't filter the packet");
                                 }
                             }
 
