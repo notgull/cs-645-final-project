@@ -44,6 +44,8 @@ pub enum RememberedIpState {
 // Adjust to taste.
 const DEFAULT_HIT_COUNT: usize = 2;
 const STARTING_TICK: u32 = 2;
+const CLEAR_RATE: f32 = 0.10;
+const UNCLEAR_TICK: u32 = 8;
 
 impl Filter {
     pub fn filters(&self, ip: u32) -> bool {
@@ -56,16 +58,17 @@ impl Filter {
             if f.tick == 0 {
                 if let Some(rem) = self.remembered.get_mut(&f.ip) {
                     if let RememberedIpState::Filtered(tick) = &mut rem.duration {
+                        let last_ticks = *tick;
                         rem.duration = RememberedIpState::GracePeriod {
                             grace_period: DEFAULT_HIT_COUNT,
-                            last_ticks: Some(match tick.saturating_div(1) {
+                            last_ticks: Some(match last_ticks.saturating_div(1) {
                                 0 => 1,
                                 x => x,
                             }),
                         };
 
-                        // Randomly decide to remove it.
-                        if fastrand::u8(..) & 8 == 8 {
+                        // Randomly decide to remove it if it isn't too bad.
+                        if last_ticks < UNCLEAR_TICK && fastrand::f32() < CLEAR_RATE {
                             self.remembered.remove(&f.ip);
                         }
                     }
