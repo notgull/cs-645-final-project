@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{
-    ElementState, Event, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
+    ElementState, Event, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
 };
 use winit::event_loop::{EventLoop, EventLoopBuilder};
 use winit::window::WindowBuilder;
@@ -250,7 +250,11 @@ fn main2(evl: EventLoop<()>) {
 
                     // Draw the frame.
                     render_context.clear(None, piet::Color::PURPLE);
-                    network.draw(&mut render_context, window.inner_size().width);
+                    network.draw(
+                        &mut render_context,
+                        window.inner_size().width,
+                        window.inner_size().height,
+                    );
 
                     // Clear and flush.
                     render_context
@@ -284,6 +288,7 @@ struct Network {
     edges: Vec<(usize, usize)>,
     update_frequency: Arc<Mutex<usize>>,
     logger: Logger,
+    blocked_ips: Logger,
 
     // The packet.
     packet_state: Arc<Mutex<Option<Packet>>>,
@@ -307,6 +312,7 @@ impl Network {
             update_frequency: Arc::new(Mutex::new(5)),
             ..Default::default()
         };
+        network.blocked_ips.on_top = false;
 
         // Generate broader internet.
         let width = 10;
@@ -666,7 +672,7 @@ impl Network {
             .expect("Failed to spawn packet driver thread!");
     }
 
-    fn draw(&mut self, context: &mut RenderContext<'_, '_>, window_width: u32) {
+    fn draw(&mut self, context: &mut RenderContext<'_, '_>, window_width: u32, window_height: u32) {
         let black_brush = self
             .black_brush
             .get_or_insert_with(|| context.solid_brush(piet::Color::rgb(0.1, 0.2, 0.1)));
@@ -703,7 +709,11 @@ impl Network {
             })
             .unwrap();
 
-        self.logger.draw(context, window_width);
+        self.logger.draw(context, window_width, window_height);
+
+        // Set blocked IPs.
+        self.blocked_ips.lines.clear();
+        self.blocked_ips.draw(context, window_width, window_height);
     }
 }
 
@@ -840,6 +850,7 @@ struct Logger {
     sender: mpsc::Sender<(LogType, String)>,
     recv: mpsc::Receiver<(LogType, String)>,
     lines: Vec<(LogType, String)>,
+    on_top: bool,
 }
 
 impl Default for Logger {
@@ -849,12 +860,18 @@ impl Default for Logger {
             sender,
             recv,
             lines: Vec::new(),
+            on_top: true,
         }
     }
 }
 
 impl Logger {
-    fn draw(&mut self, render_context: &mut RenderContext<'_, '_>, window_width: u32) {
+    fn draw(
+        &mut self,
+        render_context: &mut RenderContext<'_, '_>,
+        window_width: u32,
+        window_height: u32,
+    ) {
         const MAX_LINES: usize = 20;
         const HEIGHT: u32 = 95;
 
@@ -871,7 +888,15 @@ impl Logger {
         }
 
         // Draw a black rectangle at the top of the window.
-        let rect = Rect::from_origin_size((0.0, 0.0), (window_width as f64, HEIGHT as f64));
+        let rect = if self.on_top {
+            Rect::from_origin_size((0.0, 0.0), (window_width as f64, HEIGHT as f64))
+        } else {
+            Rect::from_origin_size(
+                (0.0, window_height as f64 - HEIGHT as f64),
+                (window_width as f64, HEIGHT as f64),
+            )
+        };
+
         render_context.fill(rect, &piet::Color::rgb(0.2, 0.2, 0.2));
         render_context.stroke(rect, &piet::Color::rgb(0.0, 0.0, 0.0), 2.0);
 
@@ -912,7 +937,13 @@ impl Logger {
 
                 context.clip(rect);
                 let layout_height = layout.size().height;
-                context.transform(Affine::translate((0.0, HEIGHT as f64 - layout_height)));
+                context.transform(Affine::translate({
+                    if self.on_top {
+                        (0.0, HEIGHT as f64 - layout_height)
+                    } else {
+                        (0.0, 0.0)
+                    }
+                }));
 
                 context.draw_text(&layout, (5.0, -1.0));
 
