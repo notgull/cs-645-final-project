@@ -292,6 +292,7 @@ struct Network {
 
     // The packet.
     packet_state: Arc<Mutex<Option<Packet>>>,
+    filter: Arc<Mutex<filter::Filter>>,
 
     // Drawing utilities.
     origin: Point,
@@ -530,6 +531,7 @@ impl Network {
         let frequency = self.update_frequency.clone();
         let packet_lock = self.packet_state.clone();
         let log_recv = self.logger.sender.clone();
+        let filter = self.filter.clone();
 
         thread::Builder::new()
             .name("Packet Driver".to_string())
@@ -543,8 +545,6 @@ impl Network {
                     let timeout_micros = SPEED_IN_MICROS[frequency];
                     thread::sleep(Duration::from_micros(timeout_micros));
                 };
-
-                let mut filt = filter::Filter::default();
 
                 loop {
                     // Choose either a malicious or benign packet.
@@ -589,6 +589,7 @@ impl Network {
 
                             // Try filtering it if we're the router.
                             if nodes[item].ty == NodeType::Router {
+                                let filt = filter.lock().unwrap();
                                 if filt.filters(packet.as_ref().unwrap().ip) {
                                     *packet = None;
                                     println!("Filtered the packet");
@@ -656,6 +657,7 @@ impl Network {
                     wait();
 
                     let report = filter::Ids.report(packet_lock.lock().unwrap().as_ref().unwrap());
+                    let mut filt = filter.lock().unwrap();
                     if let Some(ip) = report.positive() {
                         filt.hit_ip(ip);
                     }
@@ -713,6 +715,18 @@ impl Network {
 
         // Set blocked IPs.
         self.blocked_ips.lines.clear();
+
+        {
+            let filt = self.filter.lock().unwrap();
+
+            for filter in &filt.filters {
+                let ip = Ip(filter.ip);
+                self.blocked_ips
+                    .lines
+                    .push((LogType::Green, format!("Blocked IP: {}", ip)));
+            }
+        }
+
         self.blocked_ips.draw(context, window_width, window_height);
     }
 }
@@ -941,7 +955,7 @@ impl Logger {
                     if self.on_top {
                         (0.0, HEIGHT as f64 - layout_height)
                     } else {
-                        (0.0, 0.0)
+                        (0.0, window_height as f64 - HEIGHT as f64)
                     }
                 }));
 
