@@ -760,10 +760,21 @@ impl Network {
             let filt = self.filter.lock().unwrap();
 
             for filter in &filt.filters {
+                let color = self
+                    .nodes
+                    .borrow()
+                    .iter()
+                    .find(|(_, x)| x.shared.ip == filter.ip)
+                    .map(|(_, node)| match node.shared.ty() {
+                        NodeType::Malicious => LogType::Green,
+                        _ => LogType::Red,
+                    })
+                    .unwrap();
+
                 let ip = Ip(filter.ip);
                 self.blocked_ips
                     .lines
-                    .push((LogType::Green, format!("Blocked IP: {}", ip)));
+                    .push((color, format!("Blocked IP: {}", ip)));
             }
         }
 
