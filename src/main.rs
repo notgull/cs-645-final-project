@@ -652,7 +652,21 @@ impl Network {
 
                     wait();
 
-                    let report = filter::Ids.report(packet_lock.lock().unwrap().as_ref().unwrap());
+                    let report = {
+                        let packet = packet_lock.lock().unwrap();
+                        let p = packet.as_ref().unwrap();
+
+                        let mut ip = p.ip;
+
+                        // 5% chance of a spoofed IPs
+                        if p.malicious && rng.u8(..100) < 5 {
+                            let num_nodes = nodes.len();
+                            let target_ip = nodes.get(rng.usize(..num_nodes)).unwrap().ip;
+                            ip = target_ip;
+                        }
+
+                        filter::Ids.report(ip, p.malicious)
+                    };
                     let mut filt = filter.lock().unwrap();
                     if let Some(ip) = report.positive() {
                         filt.hit_ip(ip);

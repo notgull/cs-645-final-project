@@ -1,4 +1,3 @@
-use super::Packet;
 use std::collections::HashMap;
 
 /// The filter running on the router.
@@ -127,16 +126,15 @@ impl Filter {
 pub struct Ids;
 
 impl Ids {
-    pub(crate) fn report(&self, packet: &Packet) -> ReportResult {
+    pub(crate) fn report(&self, ip: u32, malicious: bool) -> ReportResult {
         const FALSE_POSITIVE_RATE: f32 = 0.10;
 
-        let is_malicious = packet.malicious;
         let fp = fastrand::f32() < FALSE_POSITIVE_RATE;
 
-        match (is_malicious, fp) {
+        match (malicious, fp) {
             (true, true) => ReportResult::FalseNegative,
-            (true, false) => ReportResult::TruePositive(packet.ip),
-            (false, true) => ReportResult::FalsePositive(packet.ip),
+            (true, false) => ReportResult::TruePositive(ip),
+            (false, true) => ReportResult::FalsePositive(ip),
             (false, false) => ReportResult::TrueNegative,
         }
     }
