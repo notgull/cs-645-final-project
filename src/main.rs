@@ -587,39 +587,6 @@ impl Network {
                                 ip: source_ip,
                             });
 
-                            // Try filtering it if we're the router.
-                            if nodes[item].ty == NodeType::Router {
-                                let filt = filter.lock().unwrap();
-                                if filt.filters(packet.as_ref().unwrap().ip) {
-                                    *packet = None;
-                                    println!("Filtered the packet");
-                                    if is_malicious {
-                                        log_recv
-                                            .send((
-                                                LogType::Normal,
-                                                format!(
-                                                    "Malicious packet was filtered from {}",
-                                                    Ip(source_ip)
-                                                ),
-                                            ))
-                                            .unwrap();
-                                    } else {
-                                        log_recv
-                                            .send((
-                                                LogType::Red,
-                                                format!(
-                                                    "Benign packet was filtered from {}",
-                                                    Ip(source_ip)
-                                                ),
-                                            ))
-                                            .unwrap();
-                                    }
-                                    return false;
-                                } else {
-                                    //println!("Didn't filter the packet");
-                                }
-                            }
-
                             drop(packet);
 
                             wait();
@@ -627,6 +594,40 @@ impl Network {
                             // If this isn't the end, also put the packet on the edge.
                             if i != path.len() - 1 {
                                 let mut packet = packet_lock.lock().unwrap();
+
+                                // Try filtering it if we're the router.
+                                if nodes[item].ty == NodeType::Router {
+                                    let filt = filter.lock().unwrap();
+                                    if filt.filters(packet.as_ref().unwrap().ip) {
+                                        *packet = None;
+                                        println!("Filtered the packet");
+                                        if is_malicious {
+                                            log_recv
+                                                .send((
+                                                    LogType::Normal,
+                                                    format!(
+                                                        "Malicious packet was filtered from {}",
+                                                        Ip(source_ip)
+                                                    ),
+                                                ))
+                                                .unwrap();
+                                        } else {
+                                            log_recv
+                                                .send((
+                                                    LogType::Red,
+                                                    format!(
+                                                        "Benign packet was filtered from {}",
+                                                        Ip(source_ip)
+                                                    ),
+                                                ))
+                                                .unwrap();
+                                        }
+                                        return false;
+                                    } else {
+                                        //println!("Didn't filter the packet");
+                                    }
+                                }
+
                                 let centerpoint = {
                                     let c1 = nodes[item].rectangle().center();
                                     let c2 = nodes[path[i + 1]].rectangle().center();
