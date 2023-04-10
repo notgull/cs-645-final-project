@@ -345,16 +345,10 @@ impl Network {
                 shared: Arc::new(SharedNode {
                     name: None,
                     ip,
-                    ty: malicious,
-                    color: if malicious == NodeType::Malicious {
-                        piet::Color::RED
-                    } else {
-                        piet::Color::TEAL
-                    },
+                    ty: malicious.into(),
                     posn: origin,
                     index: vacant,
                 }),
-                brush: None,
                 text: None,
             });
         }
@@ -484,12 +478,10 @@ impl Network {
             shared: Arc::new(SharedNode {
                 name: Some("Router".to_string()),
                 ip: rand.u32(0x1000_0000..=0xEFFF_FFFF),
-                ty: NodeType::Router,
-                color: piet::Color::GREEN,
+                ty: NodeType::Router.into(),
                 posn: Point::new((width as f64 * NODE_X_SPACING) / 2.0, max_height + 300.0),
                 index: vacant,
             }),
-            brush: None,
             text: None,
         });
 
@@ -505,12 +497,10 @@ impl Network {
                 shared: Arc::new(SharedNode {
                     name: Some(format!("{name}.cs645.net")),
                     ip: rand.u32(0xC0A8_0101..=0xC0A8_01FF),
-                    ty: NodeType::Site,
-                    color: piet::Color::OLIVE,
+                    ty: NodeType::Site.into(),
                     posn: (i as f64 * NODE_X_SPACING, max_height + 600.0).into(),
                     index: vacant,
                 }),
-                brush: None,
                 text: None,
             });
 
@@ -546,6 +536,11 @@ impl Network {
                     thread::sleep(Duration::from_micros(timeout_micros));
                 };
 
+                let orig_mal_count = nodes
+                    .iter()
+                    .filter(|n| n.ty() == NodeType::Malicious)
+                    .count();
+
                 loop {
                     // Choose either a malicious or benign packet.
                     let desired_type = if rng.u8(..) & 1 == 0 {
@@ -555,13 +550,13 @@ impl Network {
                     };
                     let chosen_sources = nodes
                         .iter()
-                        .filter(|node| node.ty == desired_type)
+                        .filter(|node| node.ty() == desired_type)
                         .collect::<Vec<_>>();
 
                     // Destination is always a site.
                     let chosen_destinations = nodes
                         .iter()
-                        .filter(|node| node.ty == NodeType::Site)
+                        .filter(|node| node.ty() == NodeType::Site)
                         .collect::<Vec<_>>();
 
                     // Choose a random source and destination.
@@ -596,7 +591,7 @@ impl Network {
                                 let mut packet = packet_lock.lock().unwrap();
 
                                 // Try filtering it if we're the router.
-                                if nodes[item].ty == NodeType::Router {
+                                if nodes[item].ty() == NodeType::Router {
                                     let filt = filter.lock().unwrap();
                                     if filt.filters(packet.as_ref().unwrap().ip) {
                                         *packet = None;
@@ -670,6 +665,50 @@ impl Network {
                         TruePositive(_) => println!("True positive"),
                         TrueNegative => println!("True negative"),
                     }
+
+                    // Randomly modify hosts to non-malicious or malicious.
+                    if rng.u16(..) & 0xFF == 0xFF {
+                        let benign_count = nodes
+                            .iter()
+                            .filter(|node| node.ty() == NodeType::Normal)
+                            .count();
+                        let malicious_count = nodes
+                            .iter()
+                            .filter(|node| node.ty() == NodeType::Malicious)
+                            .count();
+
+                        let diff = malicious_count as i32 - orig_mal_count as i32;
+
+                        let mal_to_ben = if diff > 5 {
+                            false
+                        } else if diff < -2 {
+                            true
+                        } else {
+                            rng.bool()
+                        };
+
+                        if mal_to_ben {
+                            // Randomly make a benign host malicious.
+                            let index = rng.usize(..benign_count);
+                            let node = nodes
+                                .iter()
+                                .filter(|node| node.ty() == NodeType::Normal)
+                                .nth(index)
+                                .unwrap();
+
+                            *node.ty.lock().unwrap() = NodeType::Malicious;
+                        } else {
+                            // Randomly make a malicious host benign.
+                            let index = rng.usize(..malicious_count);
+                            let node = nodes
+                                .iter()
+                                .filter(|node| node.ty() == NodeType::Malicious)
+                                .nth(index)
+                                .unwrap();
+
+                            *node.ty.lock().unwrap() = NodeType::Normal;
+                        }
+                    }
                 }
             })
             .expect("Failed to spawn packet driver thread!");
@@ -737,15 +776,13 @@ struct Node {
     shared: Arc<SharedNode>,
 
     // Drawing utilities.
-    brush: Option<Brush>,
     text: Option<TextLayout>,
 }
 
 struct SharedNode {
     name: Option<String>,
     ip: u32,
-    ty: NodeType,
-    color: piet::Color,
+    ty: Mutex<NodeType>,
     posn: Point,
     index: usize,
 }
@@ -756,6 +793,10 @@ const NODE_HEIGHT: f64 = 125.0;
 impl SharedNode {
     fn rectangle(&self) -> Rect {
         Rect::from_origin_size(self.posn, (NODE_WIDTH, NODE_HEIGHT))
+    }
+
+    fn ty(&self) -> NodeType {
+        *self.ty.lock().unwrap()
     }
 }
 
@@ -768,9 +809,12 @@ impl Node {
         const NODE_RADIUS: f64 = 10.0;
 
         let rect = RoundedRect::from_rect(self.rectangle(), NODE_RADIUS);
-        let brush = self
-            .brush
-            .get_or_insert_with(|| context.solid_brush(self.shared.color));
+        let brush = match *self.shared.ty.lock().unwrap() {
+            NodeType::Normal => piet::Color::TEAL,
+            NodeType::Malicious => piet::Color::RED,
+            NodeType::Router => piet::Color::GREEN,
+            NodeType::Site => piet::Color::OLIVE,
+        };
         let layout = self.text.get_or_insert_with(|| {
             let text = {
                 let mut text = format!("IP: {}", Ip(self.shared.ip));
@@ -794,7 +838,7 @@ impl Node {
                 .expect("Failed to build text layout")
         });
 
-        context.fill(rect, brush);
+        context.fill(rect, &brush);
         context.stroke(rect, outline_brush, 5.0);
         let text_origin = {
             let mut text_origin = rect.origin();
