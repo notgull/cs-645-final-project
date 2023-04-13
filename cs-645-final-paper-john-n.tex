@@ -12,6 +12,7 @@
 %
 \usepackage{setspace}
 \doublespacing
+\usepackage{hyperref}
 
 %
 %Rotating tables (e.g. sideways when too long)
@@ -94,6 +95,8 @@ Packets are sent from the internet servers to the web servers. The simulation ru
 In addition, the hosts can change status. On the real internet, the malicious hosts will be taken down, get put up or take over zombie servers. Once every thousand ticks, a malicious server will become benign or a benign server will become malicious. This is to simulate the changing nature of the internet. In addition, to simulate spoofing, sometime malicious flags will also report the wrong IP address.
 
 The simulation was run for several dozen million ticks. Although the first million ticks or so had a few malicious packets get through, the simulation was able to block almost all of the malicious traffic. Benign hosts were flagged briefly, but were never blocked for more than a thousand ticks. The simulation was able to block almost all of the malicious traffic, while only blocking benign traffic for a short period of time.
+
+A visualization of this process can be found \href{https://youtu.be/-2nSqtbwnJU}{here}.
 
 \textbf{4). Existing research}
 
