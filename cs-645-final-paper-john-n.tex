@@ -11,7 +11,7 @@
 %Doublespacing
 %
 \usepackage{setspace}
-\doublespacing
+%\doublespacing
 \usepackage{hyperref}
 
 %
@@ -19,6 +19,7 @@
 %
 \usepackage{rotating}
 \usepackage{multicol}
+\usepackage{ragged2e}
 
 \usepackage{graphicx}
 \graphicspath{{./images/}}
@@ -56,6 +57,8 @@
 \begin{document}
 \begin{flushleft}
 
+\justifying
+
 %%%%Changes paragraph indentation to 0.5in
 \setlength{\parindent}{0.5in}
 %%%%Begin body of paper here
@@ -68,17 +71,17 @@ One way to turn an Intrusion Detection System (IDS) into an Intrusion Prevention
 
 \textbf{2). Introduction}
 
-For ensuring the continued integrity of computer networks, it is of the utmost importance to make sure no intrusions occur. Intrusions are defined as "A security event, or a combination of multiple security events, that constitutes a security incident in which an intruder gains, or attempts to gain, access to a system or system resource without having authorization to do so" (NIST). In order to ameliorate the effects of instrusions, network administrators must establish preventative controls to detect and prevent intrusion.
+For ensuring the continued integrity of computer networks, it is of the utmost importance to make sure no intrusions occur. Intrusions are defined as "A security event, or a combination of multiple security events, that constitutes a security incident in which an intruder gains, or attempts to gain, access to a system or system resource without having authorization to do so" (NIST, 2015). In order to ameliorate the effects of instrusions, network administrators must establish preventative controls to detect and prevent intrusion.
 
-There are two general categories of controls. One type of system is an Intrusion Detection System (IDS), where the system analyzes incoming packets and determines if they represent an intrusion. Popular IDS systems include Snort, Bro and Security Onion. There are many different ways for an IDS to operate, like rule-bassed detection and profiling. On the other hand, there are also Intrusion Prevention Systems (IPS). The emphasis of an IPS focuses less on detection and more on stopping intrusion outright. Most packet analysis is similar to that of an IPS. Certain IDS systems, like Snort, also have an optional IPS mode. However, there are other IPS tools like Cisco NGIPS. The main difference between an IDS and an IPS is that an IPS can block traffic, while an IDS cannot.
+There are two general categories of controls. One type of system is an Intrusion Detection System (IDS), where the system analyzes incoming packets and determines if they represent an intrusion. Popular IDS systems include Snort, Bro and Security Onion (Software Testing Help, 2023). There are many different ways for an IDS to operate, like rule-bassed detection and profiling. On the other hand, there are also Intrusion Prevention Systems (IPS). The emphasis of an IPS focuses less on detection and more on stopping intrusion outright. Most packet analysis is similar to that of an IPS. Certain IDS systems, like Snort, also have an optional IPS mode (Patel et al, 2010). However, there are other IPS tools like Cisco NGIPS. The main difference between an IDS and an IPS is that an IPS can block traffic, while an IDS cannot (NIST, 2007).
 
-At a first glance, it may seem like an IPS has an immediate advantage over an IDS. However, IPS generally have to ignore more behavior, since if they come upon a false positive, they will block valid traffic. In many cases, it's better to have logs of \textit{potentially} malicious behavior than to block valid traffic. 
+At a first glance, it may seem like an IPS has an immediate advantage over an IDS. However, IPS generally have to ignore more behavior, since if they come upon a false positive, they will block valid traffic. In many cases, it's better to have logs of \textit{potentially} malicious behavior than to block valid traffic (Mohanakrishnan, 2022). 
 
 The fact that IDS as a significant number of false positives makes it difficult to adapt an IDS as an IPS. However, with a heuristic based strategy and taking advantage of random noise, one can effectively combine an IDS with the IPTables firewall to create a rudimentary IPS.
 
 \textbf{3). Challenges in the security issue/threat model}
 
-The na\"{i}ve approach would be to take signatures that the underlying IDS marks as malicious and then add an entry to Iptables that blocks that IP. This approach would be easy to implement and set up. However, the problem comes in when the IDS has a false positive. A single false positive can lead to connections being interrupted, which can be very disruptive. In addition, IDS may also have true negatives, where it fails to detect malicious traffic. There are also cases where IP addresses can be spoofed, which can lead to issues when a malicious user uses a benign user's IP address.
+The na\"{i}ve approach would be to take signatures that the underlying IDS marks as malicious and then add an entry to Iptables that blocks that IP. This approach would be easy to implement and set up. However, the problem comes in when the IDS has a false positive. A single false positive can lead to connections being interrupted, which can be very disruptive. In addition, IDS may also have true negatives, where it fails to detect malicious traffic. There are also cases where IP addresses can be spoofed, which can lead to issues when a malicious user uses a benign user's IP address (RSI Security, 2007).
 
 The first issue must be addresses by using a heuristic based strategy. Rather than just blocking the packet signature outright, it should only be blocked for a limited time. This allows the IDS to learn from its mistakes and not block valid traffic. The time starts off at a short interval; at the moment it is around 5 minutes. Every time the IDS produes another warning with that specific signature, the time that the signature is blocked is doubled. This strategy makes sure that the IDS has time to "learn" from its mistakes, while still blocking malicious traffic.
 
@@ -92,15 +95,35 @@ In order to test this algorithm, a na\"{i}ve visualization of a network was cons
 
 Packets are sent from the internet servers to the web servers. The simulation runs on "ticks", where a packet makes a hop every tick. Benign servers produce benign packets, while malicious servers produe malicious packets. Once the packet reaches its destination, a simulation of an IDS is run on the packet. The simulation flags the packet as malicious or benign, with appoximately 33\% chance of a false positive. This information is sent to the router, where the Iptables firewall is run. If a currently filtered packet attempts to cross the router boundary, the router will drop the packet.
 
+\includegraphics[scale=0.20]{screenshot2.png}
+
+\textit{The simulation in action. Note the blue (non malicious) packet traversing network graph.}
+
+\includegraphics[scale=0.20]{screenshot3.png}
+
+\textit{The simulation is now blocking all packets from the IP address 110.239.166.74, which is a malicious access.}
+
+\includegraphics[scale=0.20]{screenshot5.png}
+
+\textit{The simulation has now built up a significant blocklist. However, packets from non-malicious sources (the blue packet at the bottom) are still able to get through.}
+
 In addition, the hosts can change status. On the real internet, the malicious hosts will be taken down, get put up or take over zombie servers. Once every thousand ticks, a malicious server will become benign or a benign server will become malicious. This is to simulate the changing nature of the internet. In addition, to simulate spoofing, sometime malicious flags will also report the wrong IP address.
+
+\includegraphics[scale=0.20]{screenshot6.png}
+
+\textit{After some time, the landscape of the network has changed. Some benign machines are now malicious to represent machines being taken over by malicious actors. On the other hand, some malicious machines are now benign to represent malicious actors being taken off of the network. The system is able to detect which actors are now benign and take them off of the list, while realizing which actors are now malicious and adding them to the list.}
+
+\includegraphics[scale=0.20]{screenshot7.png}
+
+\textit{The system at the end of the simulation. The system has built up a relatively accurate blocklist and is now blocking most malicious packets coming in before they reach their destinations.}
 
 The simulation was run for several dozen million ticks. Although the first million ticks or so had a few malicious packets get through, the simulation was able to block almost all of the malicious traffic. Benign hosts were flagged briefly, but were never blocked for more than a thousand ticks. The simulation was able to block almost all of the malicious traffic, while only blocking benign traffic for a short period of time.
 
-A visualization of this process can be found \href{https://youtu.be/-2nSqtbwnJU}{here}.
+A visualization of this process can be found \href{https://youtu.be/-2nSqtbwnJU}{here}. The source code for the visualization can be found \href{https://github.com/notgull/cs-645-final-project}{here}.
 
 \textbf{4). Existing research}
 
-There are already existing strategies for combining an IDS with a firewall to create an IPS. F rinstance, with the Suricata IDS, there is a supported "nfqueue" mode. This works by installing an agent on the target servers that send packets to Suricata, which decides whether or not they should be sent back. Suricata then sets an Iptables rule that prevents further packets from coming in. However, this still requires setting Suricata in a dedicated "IPS" mode, which avoid the IDS entirely.
+There are already existing strategies for combining an IDS with a firewall to create an IPS. F rinstance, with the Suricata IDS, there is a supported "nfqueue" mode. This works by installing an agent on the target servers that send packets to Suricata, which decides whether or not they should be sent back. Suricata then sets an Iptables rule that prevents further packets from coming in. However, this still requires setting Suricata in a dedicated "IPS" mode, which avoid the IDS entirely (Digital Ocean, 2021).
 
 \textbf{5). Open Research Challenges/Solution}
 
@@ -118,26 +141,42 @@ For the time being, it is recommended to use a dedicated IPS. However, if this a
 
 \end{multicols}
 
+\newpage
+
+\begin{center}
+External Links
+\end{center}
+
+Link to the visual demonstration of the simulation: \href{https://youtu.be/-2nSqtbwnJU}{https://youtu.be/-2nSqtbwnJU}
+
+Link to the repository containing the source code: \href{https://github.com/notgull/cs-645-final-project}{https://github.com/notgull/cs-645-final-project}
 
 \newpage
 
 %%%%Works cited
 \begin{workscited}
 
-https://csrc.nist.gov/glossary/term/intrusion
+\bibent
+Digital Ocean. (2021, Dec 9). \textit{How To Configure Suricata as an Intrusion Prevention System (IPS) on Ubuntu 20.04}. \href{https://www.digitalocean.com/community/tutorials/how-to-configure-suricata-as-an-intrusion-prevention-system-ips-on-ubuntu-20-04}{https://www.digitalocean.com/community/tutorials/how-to-configure-suricata-as-an-intrusion-prevention-system-ips-on-ubuntu-20-04}
 
-https://www.softwaretestinghelp.com/intrusion-detection-systems/
+\bibent
+Mohanakrishnan, R. (2022, Feb 11). \textit{What Is Intrusion Detection and Prevention System?}. Spiceworks. \href{https://www.spiceworks.com/it-security/vulnerability-management/articles/what-is-idps/}{https://www.spiceworks.com/it-security/vulnerability-management/articles/what-is-idps/}
 
-https://www.spiceworks.com/it-security/vulnerability-management/articles/what-is-idps/
+\bibent
+NIST. (2015, March 21). \textit{intrusion - Glossary}. \href{https://csrc.nist.gov/glossary/term/intrusion}{https://csrc.nist.gov/glossary/term/intrusion}
 
-https://nvlpubs.nist.gov/nistpubs/legacy/sp/nistspecialpublication800-94.pdf
+\bibent
+Patel, A., Qassim, Q. \& Wills, C. (2010), "A survey of intrusion detection and prevention systems", Information Management \& Computer Security, Vol. 18 No. 4, pp. 277-290. https://doi.org/10.1108/09685221011079199 
 
-https://www.emerald.com/insight/content/doi/10.1108/09685221011079199/full/html
+\bibent
+RSI Security. (2021, Sept 20). \textit{How to Implement an Intrusion Prevention System} \href{https://blog.rsisecurity.com/how-to-implement-an-intrusion-prevention-system/}{https://www.emerald.com/insight/content/doi/10.1108/09685221011079199/full/html}
 
-https://blog.rsisecurity.com/how-to-implement-an-intrusion-prevention-system/
+\bibent
+Scarfone, K., \& Mell, P. (2007, Feb 20). \textit{Guide to Intrusion Detection and
+Prevention Systems (IDPS)}. NIST. \href{https://nvlpubs.nist.gov/nistpubs/legacy/sp/nistspecialpublication800-94.pdf}{https://nvlpubs.nist.gov/nistpubs/legacy/sp/nistspecialpublication800-94.pdf}
 
-https://www.digitalocean.com/community/tutorials/how-to-configure-suricata-as-an-intrusion-prevention-system-ips-on-ubuntu-20-04
-
+\bibent
+Software Testing Help. (2023, March 28). \textit{Top 10 BEST Intrusion Detection Systems (IDS)}. \href{https://www.softwaretestinghelp.com/intrusion-detection-systems/}{https://www.softwaretestinghelp.com/intrusion-detection-systems/}
 
 %\bibent
 %Allen, R.L. \textit{The American Farm Book; or Compend of Ameri can Agriculture; Being a Practical Treatise on Soils, Manures, Draining, Irrigation, Grasses, Grain, Roots, Fruits, Cotton, Tobacco, Sugar Cane, Rice, and Every Staple Product of the United States with the Best Methods of Planting, Cultivating, and Prep aration for Market.} New York: Saxton, 1849. Print.
